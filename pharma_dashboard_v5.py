@@ -1,12 +1,3 @@
-# pharma_dashboard_v4_fixed.py
-"""
-Pharma Dashboard - v4 (Phiên bản B: viết lại để giữ nguyên 100% chức năng,
-nhưng tối ưu, sửa lỗi, thêm export tổng hợp, gọn uploader, UI rõ ràng)
-- Giữ tất cả báo cáo/tab của file gốc
-- Sửa lỗi hiển thị %, xử lý inf/-inf, xử lý thiếu file năm trước
-- Tối ưu bằng caching cho các phép tính nặng
-- Xuất 1 file Excel tổng hợp nhiều sheet
-"""
 import streamlit as st
 import pandas as pd
 import numpy as np
