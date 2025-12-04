@@ -195,7 +195,7 @@ def load_and_standardize(uploaded, sheet_name):
 # ---------------------------
 # Upload UI (thay đổi: chỉ 1 file, sidebar, 1-2 sheets)
 # ---------------------------
-st.markdown(f"<h1 style='color: {PRIMARY_COLOR}'>Phân tích kinh doanh dược phẩm</h1>", unsafe_allow_html=True)
+st.markdown(f"<h1 style='color: {PRIMARY_COLOR}'>Con chào mí Du hehe </h1>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("Tải file")
@@ -966,4 +966,5 @@ with tabs[6]:
 
     excel_bytes = export_to_excel_bytes(**sheets)
     st.download_button("⬇️ Tải Excel tổng hợp (tất cả báo cáo)", data=excel_bytes, file_name="BaoCao_PhanTich_pharma_v6_full.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 
