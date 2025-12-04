@@ -1,14 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 import plotly.express as px
 import plotly.graph_objects as go
 
-# ---------------------------
-# Config & CSS
-# ---------------------------
 PRIMARY_COLOR = "#0A6ED1"
 UP_COLOR = "#1AA260"
 DOWN_COLOR = "#D64545"
@@ -37,7 +34,7 @@ st.markdown(f"""
     """, unsafe_allow_html=True)
 
 # ---------------------------
-# Helpers: Excel export
+# Helpers: Excel export (tối ưu: dùng xlsxwriter ưu tiên)
 # ---------------------------
 def try_excel_writer(output_stream):
     try:
@@ -69,7 +66,7 @@ def export_to_excel_bytes(**dataframes):
     return out
 
 # ---------------------------
-# Small util functions
+# Small util functions (tối ưu: vectorized)
 # ---------------------------
 def clean_code(val):
     if pd.isna(val):
@@ -82,8 +79,7 @@ def clean_code(val):
     except Exception:
         pass
     if s.endswith('.0'):
-        left = s[:-2]
-        return left
+        return s[:-2]
     return s
 
 def add_total_row(df, value_cols=None):
@@ -92,18 +88,18 @@ def add_total_row(df, value_cols=None):
     value_cols = value_cols or df.select_dtypes(include=[np.number]).columns.tolist()
     totals = {c: (df[c].sum() if c in value_cols else "") for c in df.columns}
     total_row = pd.DataFrame([totals])
-    first_nonnum = None
-    for c in df.columns:
-        if c not in value_cols:
-            first_nonnum = c
-            break
+    first_nonnum = next((c for c in df.columns if c not in value_cols), None)
     if first_nonnum:
         total_row.at[0, first_nonnum] = "TỔNG CỘNG"
     return pd.concat([df, total_row], ignore_index=True)
 
 def style_wide_doanhso(df, col_name='Doanh số'):
     try:
-        sty = df.style.format({col_name:"{:,.0f}"}) if col_name in df.columns else df.style
+        fmt_dict = {col_name: "{:,.0f}"}
+        if isinstance(df, pd.DataFrame):
+            sty = df.style.format(fmt_dict) if col_name in df.columns else df.style
+        else:
+            sty = df
         styles = [
             {'selector': 'th', 'props': [('min-width', '140px')]},
             {'selector': 'td', 'props': [('padding', '6px 8px')]},
@@ -126,20 +122,16 @@ def quarter_start_end(year, q):
     return datetime(year,10,1), datetime(year,12,31)
 
 # ---------------------------
-# Load & Standardize data
+# Load & Standardize data (tối ưu: cache, vectorized clean)
 # ---------------------------
 @st.cache_data(ttl=3600)
-def load_and_standardize(uploaded):
+def load_and_standardize(uploaded, sheet_name):
     if uploaded is None:
         return pd.DataFrame()
-    fname = uploaded.name.lower()
     try:
-        if fname.endswith(('.xlsx','.xls')):
-            raw = pd.read_excel(uploaded)
-        else:
-            raw = pd.read_csv(uploaded)
+        raw = pd.read_excel(uploaded, sheet_name=sheet_name)
     except Exception as e:
-        st.error(f"Lỗi đọc file: {e}")
+        st.error(f"Lỗi đọc sheet {sheet_name}: {e}")
         return pd.DataFrame()
 
     df = raw.copy()
@@ -169,18 +161,20 @@ def load_and_standardize(uploaded):
     emp_col = find_col(['tên tdv','tdv','nhân viên','sales','rep','employee'], fallback_idx=10)
     channel_col = find_col(['kênh','kenh','channel'], fallback_idx=12)
 
-    df['cust_code_raw'] = df[cust_code_col].apply(clean_code).astype(str) if cust_code_col in df.columns else ""
-    df['cust_name_raw'] = df[cust_name_col].astype(str).fillna("").str.strip() if cust_name_col in df.columns else ""
-    df['drug_code_raw'] = df[drug_code_col].apply(clean_code).astype(str) if drug_code_col in df.columns else ""
-    df['drug_name_raw'] = df[drug_name_col].astype(str).fillna("").str.strip() if drug_name_col in df.columns else ""
-    df['customer_full'] = df.apply(lambda r: f"{r['cust_code_raw']} - {r['cust_name_raw']}".strip(" -"), axis=1)
-    df['drug_full'] = df.apply(lambda r: f"{r['drug_code_raw']} - {r['drug_name_raw']}".strip(" -"), axis=1)
-    df['employee'] = df[emp_col].astype(str).fillna("Không rõ") if emp_col in df.columns else "Không rõ"
-    df['channel'] = df[channel_col].astype(str).fillna("Không rõ") if channel_col in df.columns else "Không rõ"
-    df['quantity'] = pd.to_numeric(df[qty_col], errors='coerce').fillna(0) if qty_col in df.columns else 0
-    df['revenue'] = pd.to_numeric(df[revenue_col], errors='coerce').fillna(0) if revenue_col in df.columns else 0
+    df['cust_code_raw'] = df[cust_code_col].apply(clean_code).astype(str) if cust_code_col else ""
+    df['cust_name_raw'] = df[cust_name_col].astype(str).fillna("").str.strip() if cust_name_col else ""
+    df['drug_code_raw'] = df[drug_code_col].apply(clean_code).astype(str) if drug_code_col else ""
+    df['drug_name_raw'] = df[drug_name_col].astype(str).fillna("").str.strip() if drug_name_col else ""
+    df['customer_full'] = df['cust_code_raw'] + " - " + df['cust_name_raw']
+    df['customer_full'] = df['customer_full'].str.strip(" -")
+    df['drug_full'] = df['drug_code_raw'] + " - " + df['drug_name_raw']
+    df['drug_full'] = df['drug_full'].str.strip(" -")
+    df['employee'] = df[emp_col].astype(str).fillna("Không rõ") if emp_col else "Không rõ"
+    df['channel'] = df[channel_col].astype(str).fillna("Không rõ") if channel_col else "Không rõ"
+    df['quantity'] = pd.to_numeric(df[qty_col], errors='coerce').fillna(0) if qty_col else 0
+    df['revenue'] = pd.to_numeric(df[revenue_col], errors='coerce').fillna(0) if revenue_col else 0
 
-    if date_col in df.columns:
+    if date_col:
         df['date'] = pd.to_datetime(df[date_col], errors='coerce').dt.normalize()
     else:
         try:
@@ -188,7 +182,7 @@ def load_and_standardize(uploaded):
         except Exception:
             df['date'] = pd.NaT
 
-    df = df[~df['date'].isna()].copy()
+    df = df[~df['date'].isna()].sort_values('date').reset_index(drop=True)
     if df.empty:
         return df
 
@@ -196,95 +190,90 @@ def load_and_standardize(uploaded):
     df['year'] = df['date'].dt.year
     df['month'] = df['date'].dt.month
     df['quarter'] = df['date'].dt.quarter
-    df = df.sort_values('date').reset_index(drop=True)
     return df
 
 # ---------------------------
-# Upload UI (compact)
+# Upload UI (thay đổi: chỉ 1 file, sidebar, 1-2 sheets)
 # ---------------------------
 st.markdown(f"<h1 style='color: {PRIMARY_COLOR}'>Phân tích kinh doanh dược phẩm</h1>", unsafe_allow_html=True)
-st.markdown("Upload: file năm hiện tại (bắt buộc) và file năm trước (tuỳ chọn).")
 
-col_up_left, col_up_right, _ = st.columns([1,1,6])
-with col_up_left:
-    uploaded_now = st.file_uploader("File năm hiện tại", type=["xlsx","xls","csv"], key="up_now", label_visibility="visible")
-with col_up_right:
-    uploaded_prev = st.file_uploader("File năm trước (tuỳ chọn)", type=["xlsx","xls","csv"], key="up_prev", label_visibility="visible")
+with st.sidebar:
+    st.header("Tải file")
+    uploaded_file = st.file_uploader("File Excel (Sheet1: năm hiện tại, Sheet2: năm trước nếu có)", type=["xlsx","xls"], key="up_file")
 
-if uploaded_now is None:
-    st.info("Vui lòng tải file năm hiện tại để bắt đầu phân tích.")
+if uploaded_file is None:
+    st.info("Vui lòng tải file Excel để bắt đầu phân tích.")
     st.stop()
 
-# ---------------------------
-# Load Data
-# ---------------------------
-df_now = load_and_standardize(uploaded_now)
-df_prev = load_and_standardize(uploaded_prev) if uploaded_prev is not None else pd.DataFrame()
+# Load sheets
+excel_file = pd.ExcelFile(uploaded_file)
+sheets = excel_file.sheet_names
+df_now = load_and_standardize(uploaded_file, sheets[0]) if sheets else pd.DataFrame()
+df_prev = load_and_standardize(uploaded_file, sheets[1]) if len(sheets) >= 2 else pd.DataFrame()
 
 # ---------------------------
-# Filters (Sidebar) - Multi-select global
+# Filters (Sidebar) - Multi-select global (thay đổi: tách date input)
 # ---------------------------
 st.sidebar.header("Bộ lọc (Multi-select) - Áp dụng cho tất cả Tabs")
-customers_all = sorted(df_now['customer_full'].dropna().unique().tolist()) if not df_now.empty else []
+customers_all = sorted(df_now['customer_full'].dropna().unique()) if not df_now.empty else []
 sel_customers = st.sidebar.multiselect("Khách hàng", options=customers_all)
 
 if sel_customers:
-    drugs_all = sorted(df_now[df_now['customer_full'].isin(sel_customers)]['drug_full'].dropna().unique().tolist())
+    drugs_all = sorted(df_now[df_now['customer_full'].isin(sel_customers)]['drug_full'].dropna().unique())
 else:
-    drugs_all = sorted(df_now['drug_full'].dropna().unique().tolist()) if not df_now.empty else []
+    drugs_all = sorted(df_now['drug_full'].dropna().unique()) if not df_now.empty else []
 sel_drugs = st.sidebar.multiselect("Sản phẩm", options=drugs_all)
 
-if sel_customers or sel_drugs:
-    mask_em = pd.Series(True, index=df_now.index)
-    if sel_customers:
-        mask_em &= df_now['customer_full'].isin(sel_customers)
-    if sel_drugs:
-        mask_em &= df_now['drug_full'].isin(sel_drugs)
-    emps_all = sorted(df_now[mask_em]['employee'].dropna().unique().tolist())
-else:
-    emps_all = sorted(df_now['employee'].dropna().unique().tolist()) if not df_now.empty else []
+mask_em = pd.Series(True, index=df_now.index)
+if sel_customers:
+    mask_em &= df_now['customer_full'].isin(sel_customers)
+if sel_drugs:
+    mask_em &= df_now['drug_full'].isin(sel_drugs)
+emps_all = sorted(df_now[mask_em]['employee'].dropna().unique()) if not df_now.empty else []
 sel_emps = st.sidebar.multiselect("Nhân viên (TDV)", options=emps_all)
 
-channels_all = sorted(df_now['channel'].dropna().unique().tolist()) if not df_now.empty else []
+channels_all = sorted(df_now['channel'].dropna().unique()) if not df_now.empty else []
 sel_channels = st.sidebar.multiselect("Kênh", options=channels_all)
 
 min_date = df_now['date'].min().date() if not df_now.empty else datetime.today().date()
 max_date = df_now['date'].max().date() if not df_now.empty else datetime.today().date()
-sel_date_range = st.sidebar.date_input("Khoảng ngày (From - To)", value=[min_date, max_date], min_value=min_date, max_value=max_date)
+from_date = st.sidebar.date_input("Từ ngày", value=min_date, min_value=min_date, max_value=max_date)
+to_date = st.sidebar.date_input("Đến ngày", value=max_date, min_value=min_date, max_value=max_date)
+sel_date_range = [from_date, to_date]
 
 # ---------------------------
-# Apply filters globally (single filtered df used by all tabs)
+# Apply filters globally (tối ưu: avoid copy where possible)
 # ---------------------------
-df_filtered = df_now.copy()
-if sel_customers:
-    df_filtered = df_filtered[df_filtered['customer_full'].isin(sel_customers)]
+df_filtered = df_now[
+    df_now['customer_full'].isin(sel_customers) if sel_customers else pd.Series(True, index=df_now.index)
+]
 if sel_drugs:
     df_filtered = df_filtered[df_filtered['drug_full'].isin(sel_drugs)]
 if sel_emps:
     df_filtered = df_filtered[df_filtered['employee'].isin(sel_emps)]
 if sel_channels:
     df_filtered = df_filtered[df_filtered['channel'].isin(sel_channels)]
-if isinstance(sel_date_range, (list, tuple)) and len(sel_date_range) == 2:
+if len(sel_date_range) == 2:
     start_dt = pd.to_datetime(sel_date_range[0])
-    end_dt = pd.to_datetime(sel_date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    end_dt = pd.to_datetime(sel_date_range[1]) + timedelta(days=1) - timedelta(seconds=1)
     df_filtered = df_filtered[(df_filtered['date'] >= start_dt) & (df_filtered['date'] <= end_dt)]
 
-# Filter prev file similarly (if present)
+# Filter prev similarly
 def apply_filters_to_prev(df_prev, sel_customers, sel_drugs, sel_emps, sel_channels, sel_date_range):
     if df_prev.empty:
         return pd.DataFrame()
-    dfp = df_prev.copy()
-    if sel_customers:
-        dfp = dfp[dfp['customer_full'].isin(sel_customers)]
+    dfp = df_prev[
+        df_prev['customer_full'].isin(sel_customers) if sel_customers else pd.Series(True, index=df_prev.index)
+    ]
     if sel_drugs:
         dfp = dfp[dfp['drug_full'].isin(sel_drugs)]
     if sel_emps:
         dfp = dfp[dfp['employee'].isin(sel_emps)]
     if sel_channels:
         dfp = dfp[dfp['channel'].isin(sel_channels)]
-    if isinstance(sel_date_range, (list, tuple)) and len(sel_date_range) == 2:
+    if len(sel_date_range) == 2:
         start_dt = pd.to_datetime(sel_date_range[0])
-        end_dt = pd.to_datetime(sel_date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        end_dt = pd.to_datetime(sel_date_range[1]) + timedelta(days=1) - timedelta(seconds=1)
         start_prev = start_dt - pd.DateOffset(years=1)
         end_prev = end_dt - pd.DateOffset(years=1)
         dfp = dfp[(dfp['date'] >= start_prev) & (dfp['date'] <= end_prev)]
@@ -293,31 +282,30 @@ def apply_filters_to_prev(df_prev, sel_customers, sel_drugs, sel_emps, sel_chann
 df_prev_filtered = apply_filters_to_prev(df_prev, sel_customers, sel_drugs, sel_emps, sel_channels, sel_date_range)
 
 # ---------------------------
-# Compute aggregates (cached)
+# Compute aggregates (tối ưu: cache ttl ngắn hơn, compute only needed)
 # ---------------------------
 @st.cache_data(ttl=300)
 def compute_aggregates(df):
     out = {}
     if df.empty:
         return out
-    out['total_revenue'] = float(df['revenue'].sum())
-    df_orders = df.copy()
-    df_orders['order_key'] = df_orders['customer_full'].astype(str) + '|' + df_orders['date'].dt.strftime('%Y-%m-%d')
-    out['total_orders'] = int(df_orders['order_key'].nunique())
-    out['total_customers'] = int(df['customer_full'].nunique())
-    out['total_products'] = int(df['drug_full'].nunique())
+    out['total_revenue'] = df['revenue'].sum()
+    df_orders = df.assign(order_key=df['customer_full'].astype(str) + '|' + df['date'].dt.strftime('%Y-%m-%d'))
+    out['total_orders'] = df_orders['order_key'].nunique()
+    out['total_customers'] = df['customer_full'].nunique()
+    out['total_products'] = df['drug_full'].nunique()
     out['monthly'] = df.groupby('year_month')['revenue'].sum().reset_index().sort_values('year_month')
     out['top_products'] = df.groupby('drug_full')['revenue'].sum().reset_index().sort_values('revenue', ascending=False)
     out['top_customers'] = df.groupby('customer_full')['revenue'].sum().reset_index().sort_values('revenue', ascending=False)
     out['prod_pareto'] = out['top_products'].copy()
     out['prod_pareto']['cum'] = out['prod_pareto']['revenue'].cumsum()
-    total_prod_rev = out['prod_pareto']['revenue'].sum() if not out['prod_pareto'].empty else 0
-    out['prod_pareto']['cum_pct'] = out['prod_pareto']['cum'] / (total_prod_rev if total_prod_rev != 0 else 1)
+    total_prod_rev = out['prod_pareto']['revenue'].sum()
+    out['prod_pareto']['cum_pct'] = out['prod_pareto']['cum'] / total_prod_rev if total_prod_rev != 0 else 0
     out['cust_pareto'] = out['top_customers'].copy()
     out['cust_pareto']['cum'] = out['cust_pareto']['revenue'].cumsum()
-    total_cust_rev = out['cust_pareto']['revenue'].sum() if not out['cust_pareto'].empty else 0
-    out['cust_pareto']['cum_pct'] = out['cust_pareto']['cum'] / (total_cust_rev if total_cust_rev != 0 else 1)
-    out['channel_summary'] = df.groupby('channel').agg({'revenue':'sum','customer_full': lambda x: x.nunique(),'drug_full': lambda x: x.nunique()}).reset_index().rename(columns={'revenue':'Doanh số','customer_full':'Số KH','drug_full':'Số SP'}).sort_values('Doanh số', ascending=False)
+    total_cust_rev = out['cust_pareto']['revenue'].sum()
+    out['cust_pareto']['cum_pct'] = out['cust_pareto']['cum'] / total_cust_rev if total_cust_rev != 0 else 0
+    out['channel_summary'] = df.groupby('channel').agg({'revenue':'sum','customer_full':'nunique','drug_full':'nunique'}).reset_index().rename(columns={'revenue':'Doanh số','customer_full':'Số KH','drug_full':'Số SP'}).sort_values('Doanh số', ascending=False)
     out['cust_month_pivot'] = df.groupby(['customer_full','year_month'])['revenue'].sum().unstack(fill_value=0)
     out['prod_month_pivot'] = df.groupby(['drug_full','year_month'])['revenue'].sum().unstack(fill_value=0)
     out['last_date'] = df['date'].max()
@@ -326,15 +314,13 @@ def compute_aggregates(df):
 ag = compute_aggregates(df_filtered)
 
 # ---------------------------
-# Tabs
+# Tabs (không thay đổi cấu trúc)
 # ---------------------------
 tabs = st.tabs(["Tổng quan", "Pareto & TOP", "Kênh", "So sánh Quý", "So sánh năm trước", "Khách hàng & Sản phẩm", "Xuất báo cáo"])
 
-# ---------------------------
-# TAB: Tổng quan
-# ---------------------------
+# TAB: Tổng quan (tối ưu: avoid copy)
 with tabs[0]:
-    st.markdown(f"## Tổng quan (Phạm vi: {sel_date_range[0]} → {sel_date_range[1]})" if isinstance(sel_date_range, (list,tuple)) and len(sel_date_range)==2 else "## Tổng quan")
+    st.markdown(f"## Tổng quan (Phạm vi: {sel_date_range[0]} → {sel_date_range[1]})" if len(sel_date_range)==2 else "## Tổng quan")
     total_revenue = ag.get('total_revenue', 0)
     total_orders = ag.get('total_orders', 0)
     total_customers = ag.get('total_customers', 0)
@@ -356,22 +342,20 @@ with tabs[0]:
         fig.update_traces(line=dict(color=PRIMARY_COLOR))
         st.plotly_chart(fig, use_container_width=True)
 
-    # Top lists
     st.markdown("### Top 10 sản phẩm theo doanh số (bảng)")
-    top10_products = ag.get('top_products', pd.DataFrame()).head(10).copy()
+    top10_products = ag.get('top_products', pd.DataFrame()).head(10)
     if not top10_products.empty:
         top10_products[['Mã Thuốc','Tên Thuốc']] = top10_products['drug_full'].str.split(' - ', n=1, expand=True)
         df_show = top10_products[['Mã Thuốc','Tên Thuốc','revenue']].rename(columns={'revenue':'Doanh số'})
-        st.dataframe(style_wide_doanhso(add_total_row(df_show), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(df_show)))
 
     st.markdown("### Top 10 khách hàng theo doanh số (bảng)")
-    top10_customers = ag.get('top_customers', pd.DataFrame()).head(10).copy()
+    top10_customers = ag.get('top_customers', pd.DataFrame()).head(10)
     if not top10_customers.empty:
         top10_customers[['Mã KH','Tên KH']] = top10_customers['customer_full'].str.split(' - ', n=1, expand=True)
         df_show = top10_customers[['Mã KH','Tên KH','revenue']].rename(columns={'revenue':'Doanh số'})
-        st.dataframe(style_wide_doanhso(add_total_row(df_show), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(df_show)))
 
-    # Danh sách nguy cơ - khách hàng giảm doanh số
     st.markdown("### Danh sách nguy cơ - khách hàng giảm doanh số")
     df_monthly_cust = ag.get('cust_month_pivot', pd.DataFrame())
     last_date = ag.get('last_date', None)
@@ -398,12 +382,11 @@ with tabs[0]:
     else:
         st.write("Không có dữ liệu để đánh giá danh sách nguy cơ.")
 
-    # Khách hàng/sản phẩm không phát sinh (6 tháng)
     st.markdown("### Khách hàng không phát sinh doanh số (liệt kê những tháng không có phát sinh) — chỉ hiển thị THÁNG")
     cust_month_pivot = ag.get('cust_month_pivot', pd.DataFrame())
     last_6_months = sorted(df_filtered['year_month'].unique())[-6:] if not df_filtered.empty else []
     no_sale_rows = []
-    for cust, row in cust_month_pivot.iterrows() if not cust_month_pivot.empty else []:
+    for cust, row in cust_month_pivot.iterrows():
         zero_months = [m.split('-')[1] for m in last_6_months if (m in row.index and row.at[m] == 0)]
         if zero_months:
             no_sale_rows.append({'customer_full': cust, 'months_no_sale': ', '.join(zero_months)})
@@ -417,7 +400,7 @@ with tabs[0]:
     st.markdown("### Sản phẩm không phát sinh doanh số (liệt kê những tháng không có phát sinh) — chỉ hiển thị THÁNG")
     prod_month_pivot = ag.get('prod_month_pivot', pd.DataFrame())
     prod_no_sale = []
-    for prod, row in prod_month_pivot.iterrows() if not prod_month_pivot.empty else []:
+    for prod, row in prod_month_pivot.iterrows():
         zero_months = [m.split('-')[1] for m in last_6_months if (m in row.index and row.at[m] == 0)]
         if zero_months:
             prod_no_sale.append({'drug_full': prod, 'months_no_sale': ', '.join(zero_months)})
@@ -428,26 +411,23 @@ with tabs[0]:
     else:
         st.write("Không có sản phẩm nào thiếu phát sinh trong 6 tháng gần nhất.")
 
-# ---------------------------
 # TAB: Pareto & TOP
-# ---------------------------
 with tabs[1]:
     st.markdown("## Pareto 80/20 & TOP")
-    prod_pareto = ag.get('prod_pareto', pd.DataFrame()).copy()
-    if not prod_pareto.empty and 'drug_full' in prod_pareto.columns:
-        split_df = prod_pareto['drug_full'].str.split(' - ', n=1, expand=True)
-        prod_pareto[['Mã Thuốc', 'Tên Thuốc']] = split_df.fillna('')
+    prod_pareto = ag.get('prod_pareto', pd.DataFrame())
+    if not prod_pareto.empty:
+        prod_pareto[['Mã Thuốc', 'Tên Thuốc']] = prod_pareto['drug_full'].str.split(' - ', n=1, expand=True)
     else:
         prod_pareto['Mã Thuốc'] = ''
         prod_pareto['Tên Thuốc'] = ''
 
-    cust_pareto = ag.get('cust_pareto', pd.DataFrame()).copy()
-    if not cust_pareto.empty and 'customer_full' in cust_pareto.columns:
+    cust_pareto = ag.get('cust_pareto', pd.DataFrame())
+    if not cust_pareto.empty:
         cust_pareto[['Mã KH','Tên KH']] = cust_pareto['customer_full'].str.split(' - ', n=1, expand=True)
 
     st.markdown("### Pareto - Sản phẩm (bảng + biểu đồ)")
     if not prod_pareto.empty:
-        st.dataframe(style_wide_doanhso(add_total_row(prod_pareto[['Mã Thuốc','Tên Thuốc','revenue','cum_pct']].rename(columns={'revenue':'Doanh số','cum_pct':'Tỷ lệ lũy kế'})), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(prod_pareto[['Mã Thuốc','Tên Thuốc','revenue','cum_pct']].rename(columns={'revenue':'Doanh số','cum_pct':'Tỷ lệ lũy kế'}))))
         fig = go.Figure()
         fig.add_trace(go.Bar(x=prod_pareto['Tên Thuốc'].fillna(prod_pareto['Mã Thuốc']), y=prod_pareto['revenue'], name='Doanh số'))
         fig.add_trace(go.Scatter(x=prod_pareto['Tên Thuốc'].fillna(prod_pareto['Mã Thuốc']), y=prod_pareto['cum_pct'], name='Tỷ lệ lũy kế', yaxis='y2', mode='lines+markers'))
@@ -459,7 +439,7 @@ with tabs[1]:
 
     st.markdown("### Pareto - Khách hàng (bảng + biểu đồ)")
     if not cust_pareto.empty:
-        st.dataframe(style_wide_doanhso(add_total_row(cust_pareto[['Mã KH','Tên KH','revenue','cum_pct']].rename(columns={'revenue':'Doanh số','cum_pct':'Tỷ lệ lũy kế'})), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(cust_pareto[['Mã KH','Tên KH','revenue','cum_pct']].rename(columns={'revenue':'Doanh số','cum_pct':'Tỷ lệ lũy kế'}))))
         fig2 = go.Figure()
         fig2.add_trace(go.Bar(x=cust_pareto['Tên KH'].fillna(cust_pareto['Mã KH']), y=cust_pareto['revenue'], name='Doanh số'))
         fig2.add_trace(go.Scatter(x=cust_pareto['Tên KH'].fillna(cust_pareto['Mã KH']), y=cust_pareto['cum_pct'], name='Tỷ lệ lũy kế', yaxis='y2', mode='lines+markers'))
@@ -473,29 +453,27 @@ with tabs[1]:
     c1, c2, c3 = st.columns(3)
     with c1:
         st.write("Top 10 Sản phẩm (Doanh số)")
-        tprod = ag.get('top_products', pd.DataFrame()).copy()
+        tprod = ag.get('top_products', pd.DataFrame())
         if not tprod.empty:
             tprod[['Mã Thuốc','Tên Thuốc']] = tprod['drug_full'].str.split(' - ', n=1, expand=True)
-            st.dataframe(style_wide_doanhso(add_total_row(tprod[['Mã Thuốc','Tên Thuốc','revenue']].rename(columns={'revenue':'Doanh số'})).head(11), col_name='Doanh số'))
+            st.dataframe(style_wide_doanhso(add_total_row(tprod[['Mã Thuốc','Tên Thuốc','revenue']].rename(columns={'revenue':'Doanh số'})).head(11)))
     with c2:
         st.write("Top 10 Khách hàng (Doanh số)")
-        tcust = ag.get('top_customers', pd.DataFrame()).copy()
+        tcust = ag.get('top_customers', pd.DataFrame())
         if not tcust.empty:
             tcust[['Mã KH','Tên KH']] = tcust['customer_full'].str.split(' - ', n=1, expand=True)
-            st.dataframe(style_wide_doanhso(add_total_row(tcust[['Mã KH','Tên KH','revenue']].rename(columns={'revenue':'Doanh số'})).head(11), col_name='Doanh số'))
+            st.dataframe(style_wide_doanhso(add_total_row(tcust[['Mã KH','Tên KH','revenue']].rename(columns={'revenue':'Doanh số'})).head(11)))
     with c3:
         st.write("Top 10 Nhân viên (Doanh số)")
         temp = df_filtered.groupby('employee')['revenue'].sum().reset_index().sort_values('revenue', ascending=False).rename(columns={'revenue':'Doanh số'})
-        st.dataframe(style_wide_doanhso(add_total_row(temp.head(10)), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(temp.head(10))))
 
-# ---------------------------
 # TAB: Kênh
-# ---------------------------
 with tabs[2]:
     st.markdown("## Phân tích Kênh")
-    ch_sum = ag.get('channel_summary', pd.DataFrame()).copy()
+    ch_sum = ag.get('channel_summary', pd.DataFrame())
     if not ch_sum.empty:
-        st.dataframe(style_wide_doanhso(add_total_row(ch_sum), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(ch_sum)))
         fig = px.pie(ch_sum, values='Doanh số', names='channel', title='Cơ cấu doanh thu theo kênh')
         fig.update_traces(textinfo='percent+label')
         st.plotly_chart(fig, use_container_width=True)
@@ -503,28 +481,26 @@ with tabs[2]:
         st.write("Không có dữ liệu kênh.")
 
     st.markdown("### Doanh số theo Kênh & Nhân viên")
-    ch_emp_agg = df_filtered.groupby(['channel','employee']).agg({'revenue':'sum','customer_full': lambda x: x.nunique(),'drug_full': lambda x: x.nunique()}).reset_index().rename(columns={'revenue':'Doanh số','customer_full':'Số KH','drug_full':'Số SP'})
-    st.dataframe(style_wide_doanhso(add_total_row(ch_emp_agg.sort_values(['channel','Doanh số'], ascending=[True,False])), col_name='Doanh số'))
+    ch_emp_agg = df_filtered.groupby(['channel','employee']).agg({'revenue':'sum','customer_full':'nunique','drug_full':'nunique'}).reset_index().rename(columns={'revenue':'Doanh số','customer_full':'Số KH','drug_full':'Số SP'})
+    st.dataframe(style_wide_doanhso(add_total_row(ch_emp_agg.sort_values(['channel','Doanh số'], ascending=[True,False]))))
 
     st.markdown("### Doanh số theo Kênh & Khách hàng")
     ch_cust = df_filtered.groupby(['channel','customer_full'])['revenue'].sum().reset_index().sort_values(['channel','revenue'], ascending=[True,False])
-    for ch in ch_cust['channel'].unique() if not ch_cust.empty else []:
+    for ch in ch_cust['channel'].unique():
         st.markdown(f"**Kênh: {ch}**")
-        sub = ch_cust[ch_cust['channel']==ch].copy()
+        sub = ch_cust[ch_cust['channel']==ch]
         sub[['Mã KH','Tên KH']] = sub['customer_full'].str.split(' - ', n=1, expand=True)
-        st.dataframe(style_wide_doanhso(add_total_row(sub[['Mã KH','Tên KH','revenue']].rename(columns={'revenue':'Doanh số'})), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(sub[['Mã KH','Tên KH','revenue']].rename(columns={'revenue':'Doanh số'}))))
 
     st.markdown("### Doanh số theo Kênh & Sản phẩm")
     ch_prod = df_filtered.groupby(['channel','drug_full'])['revenue'].sum().reset_index().sort_values(['channel','revenue'], ascending=[True,False])
-    for ch in ch_prod['channel'].unique() if not ch_prod.empty else []:
+    for ch in ch_prod['channel'].unique():
         st.markdown(f"**Kênh: {ch}**")
-        subp = ch_prod[ch_prod['channel']==ch].copy()
+        subp = ch_prod[ch_prod['channel']==ch]
         subp[['Mã Thuốc','Tên Thuốc']] = subp['drug_full'].str.split(' - ', n=1, expand=True)
-        st.dataframe(style_wide_doanhso(add_total_row(subp[['Mã Thuốc','Tên Thuốc','revenue']].rename(columns={'revenue':'Doanh số'})), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(subp[['Mã Thuốc','Tên Thuốc','revenue']].rename(columns={'revenue':'Doanh số'}))))
 
-# ---------------------------
 # TAB: So sánh Quý
-# ---------------------------
 with tabs[3]:
     st.markdown("## So sánh Quý")
     q_summary = df_filtered.groupby(['year','quarter'])['revenue'].sum().reset_index().sort_values(['year','quarter'])
@@ -532,7 +508,7 @@ with tabs[3]:
         st.write("Không có dữ liệu quý để so sánh.")
     else:
         q_pairs = q_summary[['year','quarter']].drop_duplicates().values.tolist()
-        q_options = [f"Q{q} {y}" for y,q in q_pairs]
+        q_options = [quarter_label(y, q) for y, q in q_pairs]
         selected_qs = st.multiselect("Chọn Quý (tối đa 4)", options=q_options, default=q_options[-2:] if len(q_options)>=2 else q_options)
         chosen = []
         for s in selected_qs:
@@ -547,21 +523,22 @@ with tabs[3]:
             st.write("Chưa chọn Quý để hiển thị.")
         else:
             summary_list = []
+            q_compare_dict = {}  # Để xuất report sau
             for y,q in chosen:
                 s,e = quarter_start_end(y,q)
                 mask = (df_filtered['date'] >= s) & (df_filtered['date'] <= e)
                 dfq = df_filtered[mask]
                 revenue_q = dfq['revenue'].sum()
-                orders_q = dfq.assign(order_key=dfq['customer_full'].astype(str) + '|' + dfq['date'].dt.strftime('%Y-%m-%d'))['order_key'].nunique() if not dfq.empty else 0
+                orders_q = dfq.assign(order_key=dfq['customer_full'].astype(str) + '|' + dfq['date'].dt.strftime('%Y-%m-%d'))['order_key'].nunique()
                 cust_q = dfq['customer_full'].nunique()
                 prod_q = dfq['drug_full'].nunique()
                 emp_q = dfq['employee'].nunique()
                 summary_list.append({'Quý': quarter_label(y,q), 'Doanh thu': revenue_q, 'Số đơn hàng': orders_q, 'Số KH': cust_q, 'Số SP': prod_q, 'Số NV': emp_q})
             summary_df = pd.DataFrame(summary_list)
-            st.dataframe(style_wide_doanhso(add_total_row(summary_df).rename(columns={'Doanh thu':'Doanh thu'}), col_name='Doanh thu'))
+            st.dataframe(style_wide_doanhso(add_total_row(summary_df).rename(columns={'Doanh thu':'Doanh thu'})))
 
             st.markdown("### Tất cả tăng/giảm sản phẩm so với Quý trước (bảng)")
-            for y,q in chosen:
+            for idx, (y,q) in enumerate(chosen):
                 if q == 1:
                     py, pq = y-1, 4
                 else:
@@ -576,17 +553,20 @@ with tabs[3]:
                 cur_prod = df_cur.groupby('drug_full')['revenue'].sum().reset_index().rename(columns={'revenue':'rev_cur'})
                 prev_prod = df_prev_q.groupby('drug_full')['revenue'].sum().reset_index().rename(columns={'revenue':'rev_prev'})
                 compare = pd.merge(cur_prod, prev_prod, on='drug_full', how='outer').fillna(0)
-                def to_int(x):
-                    return int(x) if x == int(x) else round(x)
-                compare['rev_cur'] = compare['rev_cur'].astype(float).apply(to_int)
-                compare['rev_prev'] = compare['rev_prev'].astype(float).apply(to_int)
                 compare['delta'] = compare['rev_cur'] - compare['rev_prev']
                 compare[['Mã Thuốc','Tên Thuốc']] = compare['drug_full'].str.split(' - ', n=1, expand=True)
+                compare_q = compare[['Mã Thuốc','Tên Thuốc','rev_prev','rev_cur','delta']].rename(columns={'rev_prev':'Quý trước','rev_cur':'Quý hiện tại','delta':'Chênh lệch'})
+                q_compare_dict[f"SanPham_Q{quarter_label(y,q)}_vs_{quarter_label(py,pq)}"] = compare_q
                 st.write(f"Quý {quarter_label(y,q)} vs {quarter_label(py,pq)} - TẤT CẢ tăng/giảm (sắp xếp theo chênh lệch)")
-                st.dataframe(style_wide_doanhso(add_total_row(compare[['Mã Thuốc','Tên Thuốc','rev_prev','rev_cur','delta']].rename(columns={'rev_prev':'Quý trước','rev_cur':'Quý hiện tại','delta':'Chênh lệch'})), col_name='Quý hiện tại').format({'Quý trước': '{:,.0f}', 'Quý hiện tại': '{:,.0f}', 'Chênh lệch': '{:,.0f}'}))
+                styled_df = add_total_row(compare_q).style.format({
+                    "Quý trước": "{:,.0f}",
+                    "Quý hiện tại": "{:,.0f}",
+                    "Chênh lệch": "{:,.0f}"
+                })
+                st.dataframe(style_wide_doanhso(styled_df))
 
             st.markdown("### Tất cả tăng/giảm khách hàng so với Quý trước (bảng)")
-            for y,q in chosen:
+            for idx, (y,q) in enumerate(chosen):
                 if q == 1:
                     py, pq = y-1, 4
                 else:
@@ -600,20 +580,22 @@ with tabs[3]:
                 cur_c = df_cur.groupby('customer_full')['revenue'].sum().reset_index().rename(columns={'revenue':'rev_cur'})
                 prev_c = df_prev_q.groupby('customer_full')['revenue'].sum().reset_index().rename(columns={'revenue':'rev_prev'})
                 comp_c = pd.merge(cur_c, prev_c, on='customer_full', how='outer').fillna(0)
-                comp_c['rev_cur'] = comp_c['rev_cur'].astype(float).apply(to_int)
-                comp_c['rev_prev'] = comp_c['rev_prev'].astype(float).apply(to_int)
                 comp_c['delta'] = comp_c['rev_cur'] - comp_c['rev_prev']
                 comp_c[['Mã KH','Tên KH']] = comp_c['customer_full'].str.split(' - ', n=1, expand=True)
+                comp_c_q = comp_c[['Mã KH','Tên KH','rev_prev','rev_cur','delta']].rename(columns={'rev_prev':'Quý trước','rev_cur':'Quý hiện tại','delta':'Chênh lệch'})
+                q_compare_dict[f"KhachHang_Q{quarter_label(y,q)}_vs_{quarter_label(py,pq)}"] = comp_c_q
                 st.write(f"Quý {quarter_label(y,q)} vs {quarter_label(py,pq)} - TẤT CẢ tăng/giảm (sắp xếp theo chênh lệch)")
-                st.dataframe(style_wide_doanhso(add_total_row(comp_c[['Mã KH','Tên KH','rev_prev','rev_cur','delta']].rename(columns={'rev_prev':'Quý trước','rev_cur':'Quý hiện tại','delta':'Chênh lệch'})), col_name='Quý hiện tại').format({'Quý trước': '{:,.0f}', 'Quý hiện tại': '{:,.0f}', 'Chênh lệch': '{:,.0f}'}))
+                styled_df = add_total_row(compare_q).style.format({
+                    "Quý trước": "{:,.0f}",
+                    "Quý hiện tại": "{:,.0f}",
+                    "Chênh lệch": "{:,.0f}"
+                })
+                st.dataframe(style_wide_doanhso(styled_df))
 
-# ---------------------------
-# TAB: So sánh cùng kỳ (năm trước)
-# ---------------------------
+# TAB: So sánh năm trước (thay đổi: bổ sung metrics KH/giao dịch/mới/mất, sửa format bảng)
 with tabs[4]:
     st.markdown("## So sánh cùng kỳ (năm trước)")
-    # determine period
-    if isinstance(sel_date_range, (list, tuple)) and len(sel_date_range) == 2:
+    if len(sel_date_range) == 2:
         start_now = pd.to_datetime(sel_date_range[0])
         end_now = pd.to_datetime(sel_date_range[1])
     else:
@@ -626,32 +608,27 @@ with tabs[4]:
 
     st.markdown(f"**Hiện tại**: {start_now.strftime('%d/%m/%Y')} → {end_now.strftime('%d/%m/%Y')}  \n**Cùng kỳ năm trước**: {start_prev.strftime('%d/%m/%Y')} → {end_prev.strftime('%d/%m/%Y')}")
 
-    # if prev file not uploaded, show info but continue where possible
     if df_prev.empty:
-        st.info("Chưa upload file năm trước → Không thể hiện bảng so sánh cùng kỳ đầy đủ. Upload file năm trước để có báo cáo chi tiết.")
-    # prepare keys in both df_filtered and df_prev (if exists)
-    df_filtered = df_filtered.copy()
+        st.info("Chưa có dữ liệu năm trước → Không thể so sánh đầy đủ.")
+
     df_filtered['cust_key'] = df_filtered['cust_code_raw'].astype(str).str.strip()
     df_filtered['drug_key'] = df_filtered['drug_code_raw'].astype(str).str.strip()
 
     if not df_prev.empty:
-        df_prev = df_prev.copy()
         df_prev['cust_key'] = df_prev['cust_code_raw'].astype(str).str.strip()
         df_prev['drug_key'] = df_prev['drug_code_raw'].astype(str).str.strip()
 
     mask_now = (df_filtered['date'] >= start_now) & (df_filtered['date'] <= end_now)
-    df_now_period = df_filtered[mask_now].copy()
+    df_now_period = df_filtered[mask_now]
 
+    df_prev_period = pd.DataFrame()
     if not df_prev.empty:
         mask_prev = (df_prev['date'] >= start_prev) & (df_prev['date'] <= end_prev)
-        df_prev_period = df_prev[mask_prev].copy()
-    else:
-        df_prev_period = pd.DataFrame()
+        df_prev_period = df_prev[mask_prev]
 
     if df_now_period.empty:
         st.warning("Không có dữ liệu trong khoảng thời gian hiện tại.")
     else:
-        # apply same key-based filters
         def apply_filters(df, sel_customers, sel_drugs, sel_emps, sel_channels):
             if df.empty:
                 return df
@@ -668,7 +645,7 @@ with tabs[4]:
             return df
 
         df_now_period = apply_filters(df_now_period, sel_customers, sel_drugs, sel_emps, sel_channels)
-        df_prev_period = apply_filters(df_prev_period, sel_customers, sel_drugs, sel_emps, sel_channels) if not df_prev_period.empty else df_prev_period
+        df_prev_period = apply_filters(df_prev_period, sel_customers, sel_drugs, sel_emps, sel_channels)
 
         if df_now_period.empty:
             st.warning("Không có dữ liệu trong khoảng thời gian hiện tại với bộ lọc đã chọn.")
@@ -680,62 +657,63 @@ with tabs[4]:
 
             cust_map_df = pd.concat([
                 df_filtered[['cust_code_raw','customer_full']].drop_duplicates(),
-                df_prev[['cust_code_raw','customer_full']].drop_duplicates()
-            ]) if not df_prev.empty else df_filtered[['cust_code_raw','customer_full']].drop_duplicates()
-            cust_map_df = cust_map_df.drop_duplicates(subset='cust_code_raw', keep='first')
+                df_prev[['cust_code_raw','customer_full']].drop_duplicates() if not df_prev.empty else pd.DataFrame()
+            ]).drop_duplicates(subset='cust_code_raw', keep='first')
             cust_map = dict(zip(cust_map_df['cust_code_raw'], cust_map_df['customer_full']))
 
             prod_map_df = pd.concat([
                 df_filtered[['drug_code_raw','drug_full']].drop_duplicates(),
-                df_prev[['drug_code_raw','drug_full']].drop_duplicates()
-            ]) if not df_prev.empty else df_filtered[['drug_code_raw','drug_full']].drop_duplicates()
-            prod_map_df = prod_map_df.drop_duplicates(subset='drug_code_raw', keep='first')
+                df_prev[['drug_code_raw','drug_full']].drop_duplicates() if not df_prev.empty else pd.DataFrame()
+            ]).drop_duplicates(subset='drug_code_raw', keep='first')
             prod_map = dict(zip(prod_map_df['drug_code_raw'], prod_map_df['drug_full']))
 
             compare_cust = pd.merge(cust_prev, cust_now, on='cust_key', how='outer').fillna(0)
-            compare_cust['rev_prev'] = compare_cust['rev_prev'].astype(float)
-            compare_cust['rev_now'] = compare_cust['rev_now'].astype(float)
             compare_cust['delta'] = compare_cust['rev_now'] - compare_cust['rev_prev']
             compare_cust['pct_change'] = np.where(compare_cust['rev_prev']==0,
                                                   np.where(compare_cust['rev_now']>0, np.inf, -np.inf),
-                                                  (compare_cust['rev_now']-compare_cust['rev_prev'])/compare_cust['rev_prev'])
+                                                  compare_cust['delta']/compare_cust['rev_prev'])
             compare_cust['customer_full'] = compare_cust['cust_key'].map(cust_map).fillna(compare_cust['cust_key'])
             compare_cust[['Mã KH','Tên KH']] = compare_cust['customer_full'].str.split(' - ', n=1, expand=True)
             compare_cust = compare_cust[['Mã KH','Tên KH','rev_prev','rev_now','delta','pct_change']]
 
             compare_prod = pd.merge(prod_prev, prod_now, on='drug_key', how='outer').fillna(0)
-            compare_prod['rev_prev'] = compare_prod['rev_prev'].astype(float)
-            compare_prod['rev_now'] = compare_prod['rev_now'].astype(float)
             compare_prod['delta'] = compare_prod['rev_now'] - compare_prod['rev_prev']
             compare_prod['pct_change'] = np.where(compare_prod['rev_prev']==0,
-                                                 np.where(compare_prod['rev_now']>0, np.inf, -np.inf),
-                                                 (compare_prod['rev_now']-compare_prod['rev_prev'])/compare_prod['rev_prev'])
+                                                  np.where(compare_prod['rev_now']>0, np.inf, -np.inf),
+                                                  compare_prod['delta']/compare_prod['rev_prev'])
             compare_prod['drug_full'] = compare_prod['drug_key'].map(prod_map).fillna(compare_prod['drug_key'])
             compare_prod[['Mã Thuốc','Tên Thuốc']] = compare_prod['drug_full'].str.split(' - ', n=1, expand=True)
             compare_prod = compare_prod[['Mã Thuốc','Tên Thuốc','rev_prev','rev_now','delta','pct_change']]
-
-            def fmt_int(x):
-                try:
-                    return int(x) if x == int(x) else round(x)
-                except Exception:
-                    return x
-            for dfx in [compare_cust, compare_prod]:
-                dfx['rev_prev'] = dfx['rev_prev'].apply(fmt_int)
-                dfx['rev_now'] = dfx['rev_now'].apply(fmt_int)
-                dfx['delta'] = dfx['delta'].apply(fmt_int)
 
             total_now = df_now_period['revenue'].sum()
             total_prev = df_prev_period['revenue'].sum() if not df_prev_period.empty else 0
             delta_total = total_now - total_prev
             pct_total = (delta_total / total_prev) if total_prev > 0 else (np.inf if total_now > 0 else 0)
 
+            # Bổ sung metrics
+            total_customers_now = df_now_period['cust_key'].nunique()
+            total_customers_prev = df_prev_period['cust_key'].nunique() if not df_prev_period.empty else 0
+            lost_customers_count = len(set(df_prev_period['cust_key'].unique()) - set(df_now_period['cust_key'].unique())) if not df_prev_period.empty else 0
+            new_customers_count = len(set(df_now_period['cust_key'].unique()) - set(df_prev_period['cust_key'].unique())) if not df_prev_period.empty else total_customers_now
+            total_orders_now = df_now_period.assign(order_key=df_now_period['customer_full'].astype(str) + '|' + df_now_period['date'].dt.strftime('%Y-%m-%d'))['order_key'].nunique()
+            total_orders_prev = df_prev_period.assign(order_key=df_prev_period['customer_full'].astype(str) + '|' + df_prev_period['date'].dt.strftime('%Y-%m-%d'))['order_key'].nunique() if not df_prev_period.empty else 0
+
             col1, col2, col3 = st.columns(3)
-            col1.metric("Doanh số hiện tại", f"{fmt_int(total_now):,}")
-            col2.metric("Doanh số năm trước", f"{fmt_int(total_prev):,}")
+            col1.metric("Doanh số hiện tại", f"{int(total_now):,}")
+            col2.metric("Doanh số năm trước", f"{int(total_prev):,}")
             arrow = "▲" if delta_total > 0 else "▼" if delta_total < 0 else "→"
             color = UP_COLOR if delta_total > 0 else DOWN_COLOR if delta_total < 0 else "gray"
             pct_str = f"{pct_total:+.1%}" if np.isfinite(pct_total) else ("Mới" if total_now > 0 else "Không có")
-            col3.markdown(f"**Tăng trưởng**<br><span style='color:{color};font-size:20px'>{arrow} {pct_str}</span>", unsafe_allow_html=True)
+            col3.markdown(f"**Tăng trưởng doanh số**<br><span style='color:{color};font-size:20px'>{arrow} {pct_str}</span>", unsafe_allow_html=True)
+
+            col4, col5, col6 = st.columns(3)
+            col4.metric("Số khách hàng hiện tại", f"{total_customers_now:,}")
+            col5.metric("Số khách hàng năm trước", f"{total_customers_prev:,}")
+            col6.metric("KH mới / KH mất", f"{new_customers_count:,} / {lost_customers_count:,}")
+
+            col7, col8 = st.columns(2)
+            col7.metric("Số giao dịch hiện tại", f"{total_orders_now:,}")
+            col8.metric("Số giao dịch năm trước", f"{total_orders_prev:,}")
 
             def format_pct(val, now_val):
                 if np.isinf(val):
@@ -743,59 +721,94 @@ with tabs[4]:
                 elif pd.isna(val):
                     return "—"
                 else:
-                    try:
-                        return f"{val:+.1%}"
-                    except Exception:
-                        return str(val)
+                    return f"{val:+.1%}"
 
             st.markdown("#### Bảng so sánh Khách hàng")
-            cust_display = compare_cust.rename(columns={'rev_prev':'Năm trước','rev_now':'Năm hiện tại','delta':'Chênh lệch','pct_change':'% Tăng trưởng'}).copy()
+            cust_display = compare_cust.rename(columns={'rev_prev':'Năm trước','rev_now':'Năm hiện tại','delta':'Chênh lệch','pct_change':'% Tăng trưởng'})
             cust_display['% Tăng trưởng'] = cust_display.apply(lambda row: format_pct(row['% Tăng trưởng'], row['Năm hiện tại']), axis=1)
-            st.dataframe(style_wide_doanhso(add_total_row(cust_display), col_name='Năm hiện tại'))
+            # Bảng khách hàng
+            styled_cust = add_total_row(cust_display).style.format({
+                "Năm trước": "{:,.0f}",
+                "Năm hiện tại": "{:,.0f}",
+                "Chênh lệch": "{:,.0f}"
+            })
+            st.dataframe(style_wide_doanhso(styled_cust))
 
             st.markdown("#### Bảng so sánh Sản phẩm")
-            prod_display = compare_prod.rename(columns={'rev_prev':'Năm trước','rev_now':'Năm hiện tại','delta':'Chênh lệch','pct_change':'% Tăng trưởng'}).copy()
+            prod_display = compare_prod.rename(columns={'rev_prev':'Năm trước','rev_now':'Năm hiện tại','delta':'Chênh lệch','pct_change':'% Tăng trưởng'})
             prod_display['% Tăng trưởng'] = prod_display.apply(lambda row: format_pct(row['% Tăng trưởng'], row['Năm hiện tại']), axis=1)
-            st.dataframe(style_wide_doanhso(add_total_row(prod_display), col_name='Năm hiện tại'))
+            # Bảng sản phẩm
+            styled_prod = add_total_row(prod_display).style.format({
+                "Năm trước": "{:,.0f}",
+                "Năm hiện tại": "{:,.0f}",
+                "Chênh lệch": "{:,.0f}"
+            })
+            st.dataframe(style_wide_doanhso(styled_prod))
 
-            # Top increase/decrease
             st.markdown("#### Top 5 Khách hàng tăng/giảm mạnh")
-            top_cust_up = cust_display[cust_display['% Tăng trưởng'].astype(str).str.contains('\+|Mới', na=False)].nlargest(5, 'Chênh lệch') if not cust_display.empty else pd.DataFrame()
-            top_cust_down = cust_display[cust_display['% Tăng trưởng'].astype(str).str.contains('\-|Mất', na=False)].nsmallest(5, 'Chênh lệch') if not cust_display.empty else pd.DataFrame()
+            top_cust_up = cust_display[cust_display['% Tăng trưởng'].astype(str).str.contains(r'\+|Mới', na=False)].nlargest(5, 'Chênh lệch')
+            top_cust_down = cust_display[cust_display['% Tăng trưởng'].astype(str).str.contains(r'\-|Mất', na=False)].nsmallest(5, 'Chênh lệch')
 
             col_up, col_down = st.columns(2)
             with col_up:
                 st.markdown("**Tăng mạnh nhất**")
                 if not top_cust_up.empty:
-                    st.dataframe(style_wide_doanhso(top_cust_up[['Mã KH', 'Tên KH', 'Chênh lệch', '% Tăng trưởng']], col_name='Chênh lệch'))
+                    # Top tăng mạnh
+                    if not top_cust_up.empty:
+                        styled = top_cust_up[['Mã KH', 'Tên KH', 'Chênh lệch', '% Tăng trưởng']].style.format({
+                            "Chênh lệch": "{:,.0f}"
+                        })
+                        st.dataframe(style_wide_doanhso(styled))
+                    else:
+                        st.write("—")   
                 else:
                     st.write("—")
             with col_down:
                 st.markdown("**Giảm mạnh nhất**")
                 if not top_cust_down.empty:
-                    st.dataframe(style_wide_doanhso(top_cust_down[['Mã KH', 'Tên KH', 'Chênh lệch', '% Tăng trưởng']], col_name='Chênh lệch'))
+                    # Top giảm mạnh
+                    if not top_cust_down.empty:
+                        styled = top_cust_down[['Mã KH', 'Tên KH', 'Chênh lệch', '% Tăng trưởng']].style.format({
+                            "Chênh lệch": "{:,.0f}"
+                        })
+                        st.dataframe(style_wide_doanhso(styled))
+                    else:
+                        st.write("—")
                 else:
                     st.write("—")
 
             st.markdown("#### Top 5 Sản phẩm tăng/giảm mạnh")
-            top_prod_up = prod_display[prod_display['% Tăng trưởng'].astype(str).str.contains('\+|Mới', na=False)].nlargest(5, 'Chênh lệch') if not prod_display.empty else pd.DataFrame()
-            top_prod_down = prod_display[prod_display['% Tăng trưởng'].astype(str).str.contains('\-|Mất', na=False)].nsmallest(5, 'Chênh lệch') if not prod_display.empty else pd.DataFrame()
+            top_prod_up = prod_display[prod_display['% Tăng trưởng'].astype(str).str.contains(r'\+|Mới', na=False)].nlargest(5, 'Chênh lệch')
+            top_prod_down = prod_display[prod_display['% Tăng trưởng'].astype(str).str.contains(r'\-|Mất', na=False)].nsmallest(5, 'Chênh lệch')
 
             col_up, col_down = st.columns(2)
             with col_up:
                 st.markdown("**Tăng mạnh nhất**")
                 if not top_prod_up.empty:
-                    st.dataframe(style_wide_doanhso(top_prod_up[['Mã Thuốc', 'Tên Thuốc', 'Chênh lệch', '% Tăng trưởng']], col_name='Chênh lệch'))
+                    # Top tăng mạnh (sản phẩm)
+                    if not top_prod_up.empty:
+                        styled = top_prod_up[['Mã Thuốc', 'Tên Thuốc', 'Chênh lệch', '% Tăng trưởng']].style.format({
+                            "Chênh lệch": "{:,.0f}"
+                        })
+                        st.dataframe(style_wide_doanhso(styled))
+                    else:
+                        st.write("—")
                 else:
                     st.write("—")
             with col_down:
                 st.markdown("**Giảm mạnh nhất**")
                 if not top_prod_down.empty:
-                    st.dataframe(style_wide_doanhso(top_prod_down[['Mã Thuốc', 'Tên Thuốc', 'Chênh lệch', '% Tăng trưởng']], col_name='Chênh lệch'))
+                    # Top giảm mạnh (sản phẩm)
+                    if not top_prod_down.empty:
+                        styled = top_prod_down[['Mã Thuốc', 'Tên Thuốc', 'Chênh lệch', '% Tăng trưởng']].style.format({
+                            "Chênh lệch": "{:,.0f}"
+                        })
+                        st.dataframe(style_wide_doanhso(styled))
+                    else:
+                        st.write("—")
                 else:
                     st.write("—")
 
-            # Monthly compare charts & tables
             st.markdown("#### Biểu đồ doanh số theo tháng (cùng kỳ)")
             df_now_period['month_num'] = df_now_period['date'].dt.month
             df_prev_period['month_num'] = df_prev_period['date'].dt.month if not df_prev_period.empty else pd.Series(dtype=int)
@@ -804,9 +817,7 @@ with tabs[4]:
             monthly_prev = df_prev_period.groupby('month_num')['revenue'].sum().reset_index().rename(columns={'revenue': 'Năm trước'}) if not df_prev_period.empty else pd.DataFrame(columns=['month_num','Năm trước'])
 
             monthly_compare = pd.merge(monthly_prev, monthly_now, on='month_num', how='outer').fillna(0)
-            monthly_compare['Hiện tại'] = monthly_compare['Hiện tại'].apply(fmt_int)
-            monthly_compare['Năm trước'] = monthly_compare['Năm trước'].apply(fmt_int) if 'Năm trước' in monthly_compare.columns else 0
-            monthly_compare['Tháng'] = monthly_compare['month_num'].apply(lambda x: f"Tháng {int(x)}")
+            monthly_compare['Tháng'] = monthly_compare['month_num'].apply(lambda x: f"Tháng {int(x)}" if pd.notna(x) else "")
 
             if not monthly_compare.empty:
                 plot_df = pd.melt(monthly_compare, id_vars=['Tháng'], value_vars=[c for c in ['Năm trước','Hiện tại'] if c in monthly_compare.columns], var_name='Năm', value_name='Doanh số')
@@ -816,19 +827,22 @@ with tabs[4]:
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.markdown("#### Bảng doanh số theo tháng")
-                monthly_table = monthly_compare[['Tháng'] + [c for c in ['Năm trước','Hiện tại'] if c in monthly_compare.columns]].copy()
+                monthly_table = monthly_compare[['Tháng'] + [c for c in ['Năm trước','Hiện tại'] if c in monthly_compare.columns]]
                 monthly_table['Chênh lệch'] = monthly_table.get('Hiện tại',0) - monthly_table.get('Năm trước',0)
                 def pct_row(r):
-                    if r.get('Năm trước',0) == 0:
+                    prev = r.get('Năm trước',0)
+                    if prev == 0:
                         return "Mới" if r.get('Hiện tại',0) > 0 else "—"
-                    else:
-                        return f"{(r.get('Hiện tại',0)-r.get('Năm trước',0))/r.get('Năm trước',1):+.1%}"
+                    return f"{(r.get('Hiện tại',0)-prev)/prev:+.1%}"
                 monthly_table['% Tăng trưởng'] = monthly_table.apply(pct_row, axis=1)
-                st.dataframe(style_wide_doanhso(add_total_row(monthly_table), col_name='Hiện tại'))
+                styled_monthly = add_total_row(monthly_table).style.format({
+                    "Năm trước": "{:,.0f}",
+                    "Hiện tại": "{:,.0f}",
+                    "Chênh lệch": "{:,.0f}"
+                })
+                st.dataframe(style_wide_doanhso(styled_monthly))
 
-# ---------------------------
 # TAB: Khách hàng & Sản phẩm
-# ---------------------------
 with tabs[5]:
     st.markdown("## Khách hàng & Sản phẩm")
     col_left, col_right = st.columns([1,1])
@@ -837,7 +851,7 @@ with tabs[5]:
         cust_all = df_filtered.groupby('customer_full')['revenue'].sum().reset_index().sort_values('revenue', ascending=False)
         if not cust_all.empty:
             cust_all[['Mã KH','Tên KH']] = cust_all['customer_full'].str.split(' - ', n=1, expand=True)
-            st.dataframe(style_wide_doanhso(add_total_row(cust_all[['Mã KH','Tên KH','revenue']].rename(columns={'revenue':'Doanh số'})), col_name='Doanh số'))
+            st.dataframe(style_wide_doanhso(add_total_row(cust_all[['Mã KH','Tên KH','revenue']].rename(columns={'revenue':'Doanh số'}))))
         else:
             st.write("Không có dữ liệu khách hàng.")
 
@@ -856,7 +870,7 @@ with tabs[5]:
         prod_all = df_filtered.groupby('drug_full')['revenue'].sum().reset_index().sort_values('revenue', ascending=False)
         if not prod_all.empty:
             prod_all[['Mã Thuốc','Tên Thuốc']] = prod_all['drug_full'].str.split(' - ', n=1, expand=True)
-            st.dataframe(style_wide_doanhso(add_total_row(prod_all[['Mã Thuốc','Tên Thuốc','revenue']].rename(columns={'revenue':'Doanh số'})), col_name='Doanh số'))
+            st.dataframe(style_wide_doanhso(add_total_row(prod_all[['Mã Thuốc','Tên Thuốc','revenue']].rename(columns={'revenue':'Doanh số'}))))
         else:
             st.write("Không có dữ liệu sản phẩm.")
 
@@ -880,66 +894,75 @@ with tabs[5]:
         st.plotly_chart(figm, use_container_width=True)
         st.markdown("Bảng doanh số theo tháng")
         monthly_table = monthly[['year_month','revenue']].rename(columns={'year_month':'Tháng','revenue':'Doanh số'})
-        st.dataframe(style_wide_doanhso(add_total_row(monthly_table), col_name='Doanh số'))
+        st.dataframe(style_wide_doanhso(add_total_row(monthly_table)))
 
-# ---------------------------
-# TAB: Xuất báo cáo (mở rộng)
-# ---------------------------
+# TAB: Xuất báo cáo 
 with tabs[6]:
     st.markdown("## Xuất báo cáo - Tải Excel tổng hợp tất cả bảng dữ liệu quan trọng")
-    filtered_export = df_filtered[['date','cust_code_raw','cust_name_raw','drug_code_raw','drug_name_raw','quantity','revenue','employee','channel','year_month']].copy()
-    filtered_export = filtered_export.rename(columns={
+    filtered_export = df_filtered[['date','cust_code_raw','cust_name_raw','drug_code_raw','drug_name_raw','quantity','revenue','employee','channel','year_month']].rename(columns={
         'cust_code_raw':'Mã KH','cust_name_raw':'Tên KH','drug_code_raw':'Mã Thuốc','drug_name_raw':'Tên Thuốc',
         'quantity':'Số lượng','revenue':'Doanh số','employee':'Nhân viên','channel':'Kênh','year_month':'Tháng'
     })
-    prod_pareto_export = ag.get('prod_pareto', pd.DataFrame()).copy()
+    prod_pareto_export = ag.get('prod_pareto', pd.DataFrame())
     if not prod_pareto_export.empty:
         prod_pareto_export[['Mã Thuốc','Tên Thuốc']] = prod_pareto_export['drug_full'].str.split(' - ', n=1, expand=True)
         prod_pareto_export = prod_pareto_export[['Mã Thuốc','Tên Thuốc','revenue','cum_pct']].rename(columns={'revenue':'Doanh số','cum_pct':'Tỷ lệ lũy kế'})
-    cust_pareto_export = ag.get('cust_pareto', pd.DataFrame()).copy()
+    cust_pareto_export = ag.get('cust_pareto', pd.DataFrame())
     if not cust_pareto_export.empty:
         cust_pareto_export[['Mã KH','Tên KH']] = cust_pareto_export['customer_full'].str.split(' - ', n=1, expand=True)
         cust_pareto_export = cust_pareto_export[['Mã KH','Tên KH','revenue','cum_pct']].rename(columns={'revenue':'Doanh số','cum_pct':'Tỷ lệ lũy kế'})
-    top_prod_export = ag.get('top_products', pd.DataFrame()).copy()
+    top_prod_export = ag.get('top_products', pd.DataFrame())
     if not top_prod_export.empty:
         top_prod_export[['Mã Thuốc','Tên Thuốc']] = top_prod_export['drug_full'].str.split(' - ', n=1, expand=True)
         top_prod_export = top_prod_export[['Mã Thuốc','Tên Thuốc','revenue']].rename(columns={'revenue':'Doanh số'})
-    top_cust_export = ag.get('top_customers', pd.DataFrame()).copy()
+    top_cust_export = ag.get('top_customers', pd.DataFrame())
     if not top_cust_export.empty:
         top_cust_export[['Mã KH','Tên KH']] = top_cust_export['customer_full'].str.split(' - ', n=1, expand=True)
         top_cust_export = top_cust_export[['Mã KH','Tên KH','revenue']].rename(columns={'revenue':'Doanh số'})
-    monthly_export = ag.get('monthly', pd.DataFrame()).copy()
-    if not monthly_export.empty:
-        monthly_export = monthly_export.rename(columns={'year_month':'Tháng','revenue':'Doanh số'})
-    channel_export = ag.get('channel_summary', pd.DataFrame()).copy()
+    monthly_export = ag.get('monthly', pd.DataFrame()).rename(columns={'year_month':'Tháng','revenue':'Doanh số'})
+    channel_export = ag.get('channel_summary', pd.DataFrame())
 
     last_purchase = df_filtered.groupby('customer_full')['date'].max().reset_index().rename(columns={'date':'last_date'})
     last_purchase['days_since'] = (pd.to_datetime(df_filtered['date'].max()) - last_purchase['last_date']).dt.days
-    dormant_export = last_purchase[last_purchase['days_since'] > 60].copy()
+    dormant_export = last_purchase[last_purchase['days_since'] > 60]
     if not dormant_export.empty:
         dormant_export[['Mã KH','Tên KH']] = dormant_export['customer_full'].str.split(' - ', n=1, expand=True)
         dormant_export = dormant_export[['Mã KH','Tên KH','last_date','days_since']].rename(columns={'last_date':'Ngày mua cuối','days_since':'Số ngày'})
 
     last_prod = df_filtered.groupby('drug_full')['date'].max().reset_index().rename(columns={'date':'last_date'})
     last_prod['days_since'] = (pd.to_datetime(df_filtered['date'].max()) - last_prod['last_date']).dt.days
-    prod_dormant_export = last_prod[last_prod['days_since'] > 90].copy()
+    prod_dormant_export = last_prod[last_prod['days_since'] > 90]
     if not prod_dormant_export.empty:
         prod_dormant_export[['Mã Thuốc','Tên Thuốc']] = prod_dormant_export['drug_full'].str.split(' - ', n=1, expand=True)
         prod_dormant_export = prod_dormant_export[['Mã Thuốc','Tên Thuốc','last_date','days_since']].rename(columns={'last_date':'Ngày bán cuối','days_since':'Số ngày'})
 
+    # Bổ sung từ So sánh Quý
+    q_summary_export = summary_df if 'summary_df' in locals() else pd.DataFrame()
+
+    # Bổ sung từ So sánh năm trước
+    cust_compare_export = cust_display if 'cust_display' in locals() else pd.DataFrame()
+    prod_compare_export = prod_display if 'prod_display' in locals() else pd.DataFrame()
+    monthly_compare_export = monthly_table if 'monthly_table' in locals() else pd.DataFrame()
+
+    # Thêm q_compare_dict từ So sánh Quý
     sheets = {
         "Filtered_Data": filtered_export,
-        "Pareto_Thuoc": prod_pareto_export if not prod_pareto_export.empty else pd.DataFrame(),
-        "Pareto_KhachHang": cust_pareto_export if not cust_pareto_export.empty else pd.DataFrame(),
-        "Top_Thuoc": top_prod_export if not top_prod_export.empty else pd.DataFrame(),
-        "Top_KhachHang": top_cust_export if not top_cust_export.empty else pd.DataFrame(),
-        "Monthly": monthly_export if not monthly_export.empty else pd.DataFrame(),
-        "Channel_Summary": channel_export if not channel_export.empty else pd.DataFrame(),
-        "KhachHang_Dormant": dormant_export if not dormant_export.empty else pd.DataFrame(),
-        "SanPham_Dormant": prod_dormant_export if not prod_dormant_export.empty else pd.DataFrame()
+        "Pareto_Thuoc": prod_pareto_export,
+        "Pareto_KhachHang": cust_pareto_export,
+        "Top_Thuoc": top_prod_export,
+        "Top_KhachHang": top_cust_export,
+        "Monthly": monthly_export,
+        "Channel_Summary": channel_export,
+        "KhachHang_Dormant": dormant_export,
+        "SanPham_Dormant": prod_dormant_export,
+        "SoSanh_Quy_Summary": q_summary_export,
+        "SoSanh_NamTruoc_KH": cust_compare_export,
+        "SoSanh_NamTruoc_SP": prod_compare_export,
+        "SoSanh_NamTruoc_Thang": monthly_compare_export,
     }
+    # Thêm các so sánh quý từ dict
+    if 'q_compare_dict' in locals():
+        sheets.update(q_compare_dict)
 
     excel_bytes = export_to_excel_bytes(**sheets)
-    st.download_button("⬇️ Tải Excel tổng hợp (tất cả báo cáo)", data=excel_bytes, file_name="BaoCao_PhanTich_pharma_v4_full.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-st.success("Dashboard đã sẵn sàng — đã giữ nguyên toàn bộ chức năng, đồng thời sửa lỗi, tối ưu và mở rộng chức năng xuất báo cáo.")
+    st.download_button("⬇️ Tải Excel tổng hợp (tất cả báo cáo)", data=excel_bytes, file_name="BaoCao_PhanTich_pharma_v6_full.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
