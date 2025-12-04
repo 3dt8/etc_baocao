@@ -10,7 +10,7 @@ PRIMARY_COLOR = "#0A6ED1"
 UP_COLOR = "#1AA260"
 DOWN_COLOR = "#D64545"
 
-st.set_page_config(layout="wide", page_title="Phân tích kinh doanh dược phẩm", initial_sidebar_state="expanded")
+st.set_page_config(layout="wide", page_title="Con chào Mí Du ", initial_sidebar_state="expanded")
 
 st.markdown(f"""
     <style>
@@ -847,7 +847,7 @@ with tabs[5]:
     st.markdown("## Khách hàng & Sản phẩm")
     col_left, col_right = st.columns([1,1])
     with col_left:
-        st.markdown("### Khách hàng - Doanh số gộp (phạm vi bộ lọc)")
+        st.markdown("### Khách hàng - Doanh số gộp ")
         cust_all = df_filtered.groupby('customer_full')['revenue'].sum().reset_index().sort_values('revenue', ascending=False)
         if not cust_all.empty:
             cust_all[['Mã KH','Tên KH']] = cust_all['customer_full'].str.split(' - ', n=1, expand=True)
@@ -866,7 +866,7 @@ with tabs[5]:
             st.write("Không có khách hàng lâu chưa mua (>60 ngày).")
 
     with col_right:
-        st.markdown("### Sản phẩm - Doanh số gộp (phạm vi bộ lọc)")
+        st.markdown("### Sản phẩm - Doanh số gộp ")
         prod_all = df_filtered.groupby('drug_full')['revenue'].sum().reset_index().sort_values('revenue', ascending=False)
         if not prod_all.empty:
             prod_all[['Mã Thuốc','Tên Thuốc']] = prod_all['drug_full'].str.split(' - ', n=1, expand=True)
@@ -884,13 +884,13 @@ with tabs[5]:
         else:
             st.write("Không có sản phẩm lâu không bán (>90 ngày).")
 
-    st.markdown("### Biểu đồ & Bảng: Doanh số theo từng tháng (phạm vi bộ lọc hiện tại)")
+    st.markdown("### Biểu đồ & Bảng: Doanh số theo từng tháng ")
     monthly = ag.get('monthly', pd.DataFrame())
     if monthly.empty:
         st.write("Không có dữ liệu theo tháng.")
     else:
         monthly['dt'] = pd.to_datetime(monthly['year_month'] + "-01", errors='coerce')
-        figm = px.bar(monthly, x='dt', y='revenue', title='Doanh số theo tháng (phạm vi bộ lọc)', labels={'dt':'Tháng','revenue':'Doanh số'})
+        figm = px.bar(monthly, x='dt', y='revenue', title='Doanh số theo tháng ', labels={'dt':'Tháng','revenue':'Doanh số'})
         st.plotly_chart(figm, use_container_width=True)
         st.markdown("Bảng doanh số theo tháng")
         monthly_table = monthly[['year_month','revenue']].rename(columns={'year_month':'Tháng','revenue':'Doanh số'})
@@ -966,3 +966,4 @@ with tabs[6]:
 
     excel_bytes = export_to_excel_bytes(**sheets)
     st.download_button("⬇️ Tải Excel tổng hợp (tất cả báo cáo)", data=excel_bytes, file_name="BaoCao_PhanTich_pharma_v6_full.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
